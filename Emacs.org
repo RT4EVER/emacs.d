@@ -51,10 +51,6 @@
   ;; 避免整个会话一直维持 128MB 的高水位
   (setq gc-cons-threshold (* 128 1000 1000))
 
-  (add-hook 'emacs-startup-hook
-            (lambda ()
-              (setq gc-cons-threshold (* 16 1000 1000))))
-
   (defun bc/display-startup-time ()
     (message "Emacs loaded in %s with %d garbage collections."
              (format "%.2f seconds"
@@ -122,7 +118,6 @@ hacker.
     :config
     (require 'recentf)
     (add-to-list 'recentf-exclude no-littering-var-directory)
-    (recentf-mode 1)
 
     ;; no-littering doesn't set this by default so we must place
     ;; auto save files in the same path as it uses for sessions
@@ -241,23 +236,6 @@ easier than finding and setting these variables yourself.
   (advice-add 'kill-ring-save :after #'my/osc52-copy)
 
 #+end_src
-** Daemon & File Sync
-这些配置是 Emacs 与外部工具（git、Claude Code 等 CLI 工具）协同工作的基础。
-#+begin_src emacs-lisp
-  ;; 开启 daemon 支持，允许 emacsclient 连接
-  ;; 外部工具通过 EDITOR="emacsclient -c -a ''" 可在当前 Emacs 中打开文件
-  (server-start)
-
-  ;; 文件被外部工具修改后自动刷新 buffer（git checkout、Claude Code 编辑等）
-  (global-auto-revert-mode 1)
-
-  ;; 持久化 minibuffer 历史（vertico/consult 的选择记录）
-  (savehist-mode 1)
-
-  ;; 记住上次离开文件时的光标位置
-  (save-place-mode 1)
-#+end_src
-
 ** UI
 *** Modeline
 #+begin_src emacs-lisp
@@ -302,7 +280,7 @@ easier than finding and setting these variables yourself.
   (column-number-mode)
   (global-display-line-numbers-mode t)
 
-  ;; -------- GUI 外观变量定义 --------
+  ;; Set frame transparenc
   (defvar my/frame-transparency '(95 . 95))
   (set-frame-parameter (selected-frame) 'alpha my/frame-transparency)
   (add-to-list 'default-frame-alist `(alpha . ,my/frame-transparency))
@@ -381,8 +359,8 @@ easier than finding and setting these variables yourself.
 
 *** Theme
 #+begin_src emacs-lisp
-  ;; 主题加载已移至 my/setup-gui-frame 函数中（见 Hightlight 节），
-  ;; 以兼容 daemon 模式（emacs --daemon + emacsclient -c）
+
+  (load-theme 'wombat t)
 #+end_src
 
 * Programing
@@ -461,10 +439,10 @@ easier than finding and setting these variables yourself.
     :commands (ggtags-mode ggtags-find-definition ggtags-find-reference ggtags-find-symbol))
 
   (use-package blacken
-      :straight t
-      :hook (python-mode . blacken-mode)
-      :config
-      (setq blacken-line-length 79))
+    :straight t
+    :hook (python-mode . blacken-mode)
+    :config
+    (setq blacken-line-length 79))
 #+end_src
 
 ** Linter
@@ -485,10 +463,6 @@ easier than finding and setting these variables yourself.
   ;; 上的自定义函数每条命令都查一遍诊断，纯属开销，已删除
   ;; （注意 when-let 在 31 中已废弃，若保留旧函数需改用 when-let*）
   (setq flymake-show-diagnostics-at-end-of-line 'short)
-
-  ;; 使用 idle timer 代替 post-command-hook，只在 Emacs 空闲时触发诊断查询，
-  ;; 避免每次按键都执行，减少大文件 + LSP 场景下的输入延迟
-  (run-with-idle-timer 0.5 t #'flymake-show-diagnostic-if-needed)
 
 #+end_src
 
