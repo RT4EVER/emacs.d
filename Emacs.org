@@ -28,6 +28,22 @@
 #        - 字体改为“先 find-font 检测、再设置”：系统里没装的字体
 #          （如本机没有 Source Sans 3）自动跳过并回退到候选列表中
 #          已安装的字体，不再抛 "Font not available" 中断启动
+#  10. 键位按“两层架构”重整：Evil 只管编辑（补 evil-undo-system，
+#      否则新版 evil 的 C-r 直接报错；j/k 适配 visual-line 软换行）；
+#      SPC leader 只挂 normal/visual —— insert 里的空格恢复正常、
+#      set-mark 不再被 C-SPC 劫持；leader 命名空间化为 c/f/b/e/g/r/p/t
+#      并补齐 ff/bb 等高频项；which-key 定位收敛为“leader 菜单 +
+#      不熟悉命令的提示”
+#  11. 按第二轮反馈补齐：OSC 52 段正名（与 vterm 包无关，面向
+#      ssh + emacs -nw 场景，补 tmux DCS 透传与长度保护）；新增内置
+#      project.el 支持（SPC p p/f/b/g），Python 命名空间让位改挂 SPC P；
+#      prog-mode 开启内置 electric-pair-mode 自动补括号；diminish 无需
+#      安装（doom-modeline 默认就隐藏 minor modes）
+#  12. treemacs 与 project.el 衔接：新增 SPC p t
+#      (treemacs-add-and-display-current-project) 在当前项目根打开文件
+#      树；无需 treemacs-projectile（源码已核实识别顺序 projectile ->
+#      project.el -> cwd），独占式变体与 project-follow-mode 的取舍
+#      见 File tree 段注释
 # =============================================================================
 
 * Startup Performance
@@ -159,6 +175,10 @@ easier than finding and setting these variables yourself.
 
 ** Completion FrameWork
 #+begin_src emacs-lisp
+  ;; ===== Emacs 交互层：M-x / C-x + Consult / Vertico / Corfu =====
+  ;; 这一层的职责是“与 Emacs 本身交互”——找命令、找文件、找 buffer、
+  ;; 全局搜索、补全；与 Evil 的编辑层完全解耦。
+  ;; 高层命令入口统一收敛到 SPC leader（见 Keymap 一节）。
 
   ;; Basic completion frame work backend, like server
   (use-package vertico
@@ -219,19 +239,43 @@ easier than finding and setting these variables yourself.
     (add-to-list 'completion-at-point-functions #'cape-keyword)   ; 编程语言关键字
     (add-to-list 'completion-at-point-functions #'cape-file))     ; 文件路径补全
 #+end_src
-** Copy Vterm
+** Clipboard in Terminal (OSC 52)
 #+begin_src emacs-lisp
-  ;; 通过 OSC 52 把复制的内容发给终端剪贴板（需终端或 tmux 支持 OSC 52）。
-  ;; 注意：Emacs（包括 31）不存在 `kill-ring-save-hook'，
-  ;; 旧版挂在该 hook 上实际从未生效，这里改用 advice 挂在 kill-ring-save 之后。
+  ;; ===== 终端剪贴板（OSC 52）=====
+  ;; 适用场景：Emacs 本身跑在终端里 —— 典型是 ssh 到 Linux 服务器后
+  ;; emacs -nw，复制的内容要落到“本地终端”（Windows Terminal 等）的
+  ;; 系统剪贴板上。图形界面下 Emacs 自己就能写系统剪贴板，本段自动跳过。
+  ;;
+  ;; 注意：这一段与 vterm 包无关（vterm 不支持原生 Windows，本配置也
+  ;; 没有安装它）；旧标题 "Copy Vterm" 容易误导，已改名。
+  ;; 另：Emacs（包括 31）不存在 `kill-ring-save-hook'，旧版挂在该 hook
+  ;; 上的代码实际从未生效，这里改用 advice 挂在 kill-ring-save 之后。
+  (defconst my/osc52-max-bytes 74994
+    "多数终端 / tmux 默认能接受的 OSC 52 负载上限（字节）。")
+
+  (defun my/osc52--send (text)
+    "把 TEXT 以 OSC 52 序列发给当前终端，tmux 下自动加 DCS 透传包装。"
+    (let* ((payload (concat "\e]52;c;"
+                            (base64-encode-string
+                             (encode-coding-string text 'utf-8) 'no-line-break)
+                            "\a"))
+           ;; tmux 会吞掉直发的 OSC 52，需要用 DCS passthrough 包一层，
+           ;; 并把内部的 ESC 全部翻倍
+           (payload (if (getenv "TMUX")
+                        (concat "\ePtmux;\e"
+                                (string-replace "\e" "\e\e" payload)
+                                "\e\\")
+                      payload)))
+      (send-string-to-terminal payload)))
+
   (defun my/osc52-copy ()
-    "把最近一次 kill 的内容通过 OSC 52 发给终端剪贴板。"
+    "kill-ring-save 的 after advice：把复制内容通过 OSC 52 发给终端。"
     (let ((text (ignore-errors (substring-no-properties (current-kill 0)))))
-      (when (and text (not (display-graphic-p)))
-        (ignore-errors
-          (send-string-to-terminal
-           (format "\e]52;c;%s\a"
-                   (base64-encode-string (encode-coding-string text 'utf-8) t)))))))
+      (when (and text
+                 (not (display-graphic-p))
+                 (getenv "TERM")                     ; 只在真实终端里发送
+                 (<= (length text) my/osc52-max-bytes))
+        (ignore-errors (my/osc52--send text)))))
 
   (advice-add 'kill-ring-save :after #'my/osc52-copy)
 
@@ -244,6 +288,9 @@ easier than finding and setting these variables yourself.
     ;; 首次使用记得执行: M-x nerd-icons-install-fonts
     )
 
+  ;; 关于 diminish：doom-modeline 默认隐藏全部 minor modes
+  ;; （doom-modeline-minor-modes 默认 nil），modeline 本来就不拥挤，
+  ;; 无需额外安装；哪天开启 doom-modeline-minor-modes 再用它精简不迟
   (use-package doom-modeline
     :straight t
     :init
@@ -254,9 +301,24 @@ easier than finding and setting these variables yourself.
   ;; :commands 让 treemacs 延迟到第一次调用时才加载，不再拖慢启动
   (use-package treemacs
     :straight t
-    :commands (treemacs treemacs-select-directory)
+    :commands (treemacs treemacs-select-directory
+                        treemacs-add-and-display-current-project)
     :config
     (treemacs-follow-mode t))
+
+  ;; treemacs 与内置 project.el 的衔接（SPC p t）：
+  ;; treemacs-add-and-display-current-project 按 projectile -> 内置
+  ;; project.el -> 当前目录 识别项目根（本配置没装 projectile，实际走
+  ;; project.el，与 SPC p 其余命令一致），首次会把项目写入 treemacs
+  ;; 的持久化 workspace，之后打开树并定位到该项目根，不影响其他项目。
+  ;; 源码已核实：无需 treemacs-projectile 桥接包。
+  ;;
+  ;; 两个进阶选项（默认不开，按需自行启用）：
+  ;;   1) treemacs-add-and-display-current-project-exclusively：
+  ;;      树里只留当前项目，但会移除 workspace 中的其他项目（破坏性）
+  ;;   2) (treemacs-project-follow-mode t)：idle 1.5s 自动把树切到
+  ;;      buffer 所属的项目，多工程频繁切换时省心，代价同样是
+  ;;      workspace 的多项目列表会被动态替换
 
   ;; Evil 下 treemacs 的 j/k 导航、h/l 折叠依赖 treemacs-evil
   (use-package treemacs-evil
@@ -466,8 +528,13 @@ easier than finding and setting these variables yourself.
 
 #+end_src
 
-
-
+** Electric Pair
+#+begin_src emacs-lisp
+  ;; 括号/成对符号自动补全（内置，写 C/C++/Rust/Verilog 时必备）。
+  ;; 只挂 prog-mode，org 等文本 buffer 不受影响，撇号/引号不会被拆对；
+  ;; 若日后需要 wrap/扩展删除等更细的控制，再考虑 smartparens。
+  (add-hook 'prog-mode-hook #'electric-pair-local-mode)
+#+end_src
 
 * Keymap
 ** Evil Mode
@@ -476,8 +543,25 @@ turning Emacs into a modal editor. Like Emacs in general, Evil is extensible in
 Emacs Lisp.
 
 #+begin_src emacs-lisp
+  ;; ============ 键位架构：两层分离 ============
+  ;; Emacs 交互层：M-x / C-x / Consult / Vertico / Corfu（见上文 Completion FrameWork）
+  ;;   -> 负责“与 Emacs 本身交互”：找命令、找文件、找 buffer、补全
+  ;; Evil 编辑层：Normal / Visual / Operator / Insert + 文本对象
+  ;;   -> 只负责文本编辑：d c y > / w b e / iw aw / i" a"，与交互层解耦
+  ;; SPC leader：所有高层命令的统一入口（按命名空间分组，见下方 my/leader-keys）
+  ;; which-key：只做两件事 —— leader 前缀弹菜单、不熟悉的命令给提示；
+  ;;            不试图教你整个 Evil（编辑层靠肌肉记忆，不靠菜单）
+  ;;
+  ;; 以下 evil-* 变量必须在 evil 加载之前设置（setq-then-load 模式）：
   (setq evil-want-integration t)
   (setq evil-want-keybinding nil)
+  ;; 新版 evil 不设置它，C-r redo 会直接 user-error（evil 源码已核实）
+  (setq evil-undo-system 'undo-redo)
+  ;; 全局软换行下让 j/k 按屏幕行移动，否则在折行的长段落里一按 j 跳整段
+  (setq evil-respect-visual-line-mode t)
+  ;; C-u 半页上滚（vim 习惯；代价：Normal 态的 C-u 不再是
+  ;; universal-argument，需要前缀参数时用数字形式如 3j / 10C-v）
+  (setq evil-want-C-u-scroll t)
 
   (use-package evil
     :straight t
@@ -507,69 +591,76 @@ Emacs Lisp.
     :straight t
     :config
     (general-evil-setup)
-    ;; 定义你的 Leader Key 逻辑
+    ;; SPC = 高层命令统一入口，只在 Normal / Visual 生效。
+    ;; 刻意不挂 insert / emacs state：插入模式里 SPC 必须还是普通空格
+    ;; （general.el 官方文档：SPC 挂进 insert state 会让空格等下一个键
+    ;; 按下后才上屏）；想用 leader 先 C-g 回 Normal。也不设 C-SPC
+    ;; global-prefix，把 set-mark-command 还给 Emacs 交互层。
     (general-create-definer my/leader-keys
-      :keymaps '(normal insert visual emacs)
-      :prefix "SPC"
-      :global-prefix "C-SPC")
+      :keymaps '(normal visual)
+      :prefix "SPC")
 
     (my/leader-keys
-
-      ;; -----------------------
-      ;; xref（走 eglot 的 LSP）
-      ;; -----------------------
+      ;; ---------- c: Code（LSP / xref） ----------
       "cd" '(xref-find-definitions :which-key "Jump to Definition")
       "cu" '(xref-find-references  :which-key "Find Usages/References")
-      "cb" '(xref-go-back :which-key "Back (Pop Mark)")
+      "cb" '(xref-go-back          :which-key "Back (Pop Mark)")
+      "cr" '(eglot-rename          :which-key "Rename symbol")
+      "cf" '(eglot-format          :which-key "Format buffer/region")
 
-      ;; -----------------------
-      ;; ggtags 相关命令（先 M-x ggtags-mode，且已生成 GTAGS）
-      ;; -----------------------
+      ;; ---------- f: File ----------
+      "ff" '(consult-find        :which-key "Find file")
+      "fr" '(consult-recent-file :which-key "Recent files")
+      "fs" '(save-buffer         :which-key "Save buffer")
+
+      ;; ---------- b: Buffer ----------
+      "bb" '(consult-buffer :which-key "Switch buffer")
+
+      ;; ---------- e: Errors（Flymake） ----------
+      "el" 'flymake-show-buffer-diagnostics  ;; 列出当前 buffer 诊断
+      "en" 'flymake-goto-next-error          ;; 下一个错误
+      "ep" 'flymake-goto-prev-error          ;; 上一个错误
+
+      ;; ---------- g: GNU Global（按需兑底） ----------
+      ;; 先 M-x ggtags-mode 且已生成 GTAGS；常规跳转请用 c d / c u
       "gd" 'ggtags-find-definition
       "gr" 'ggtags-find-reference
       "gs" 'ggtags-find-symbol
 
-      ;; -----------------------
-      ;; 文件（C-r 已还给 evil redo，最近文件移到这里）
-      ;; -----------------------
-      "fr" '(consult-recent-file :which-key "Recent files")
+      ;; ---------- r: Rust ----------
+      "rr" 'rustic-cargo-run       ;; 运行 cargo 项目
+      "rt" 'rustic-cargo-test      ;; 运行 cargo 测试
+      "rk" 'rustic-cargo-check     ;; 运行 cargo 检查
+      "rl" 'rustic-cargo-clippy    ;; 运行 cargo clippy
+      "rf" 'rustic-format-buffer   ;; 格式化当前 buffer
 
-      ;; -----------------------
-      ;; Flymake 相关命令
-      ;; -----------------------
-      "fe" 'flymake-show-buffer-diagnostics  ;; 显示当前 buffer 的诊断信息
-      "fn" 'flymake-goto-next-error         ;; 跳转到下一个错误
-      "fp" 'flymake-goto-prev-error         ;; 跳转到上一个错误
+      ;; ---------- p: Project（Emacs 31 内置 project.el，无需安装） ----------
+      ;; 多工程场景（U-Boot、各个 C/C++ 仓库）：进入项目内任意文件后，
+      ;; project.el 自动把 git 根目录识别为当前项目；内置前缀 C-x p 下
+      ;; 还有全部命令可用，这里只收敛最高频的五条
+      "pp" '(project-switch-project  :which-key "Switch project")
+      "pf" '(project-find-file       :which-key "Find file in project")
+      "pb" '(consult-project-buffer :which-key "Switch project buffer")
+      "pg" '(consult-ripgrep        :which-key "Grep in project")
+      "pt" '(treemacs-add-and-display-current-project
+             :which-key "Treemacs at project root")
 
-      ;; -----------------------
-      ;; Rustic 相关命令
-      ;; -----------------------
-      "rr" 'rustic-cargo-run             ;; 运行 cargo 项目
-      "rt" 'rustic-cargo-test            ;; 运行 cargo 测试
-      "rk" 'rustic-cargo-check           ;; 运行 cargo 检查
-      "rl" 'rustic-cargo-clippy          ;; 运行 cargo clippy
-      "rf" 'rustic-format-buffer         ;; 格式化当前 buffer
+      ;; ---------- P: Python（REPL） ----------
+      ;; 原 p 前缀让位给 Project（更高频），Python 整体升为大写 P
+      "Pe" '(python-shell-send-buffer    :which-key "Send buffer to REPL")
+      "Ps" '(python-shell-send-statement :which-key "Send statement to REPL")
+      "Pf" '(python-shell-send-file      :which-key "Send file to REPL")
 
-      ;; -----------------------
-      ;; Python 相关命令
-      ;; -----------------------
-      "pe" 'python-shell-send-buffer     ;; 发送当前 buffer 到 Python REPL
-      "ps" 'python-shell-send-statement  ;; 发送当前语句到 Python REPL
-      "pf" 'python-shell-send-file       ;; 运行 Python 脚本
-
+      ;; ---------- t: Tree ----------
+      "tt" '(treemacs :which-key "Treemacs")
       )
     )
 
-  ;;提供一个更一致的补全体验：ggtags/vertico/corfu 都走统一的 completing-read
-  ;;（旧版显式 setq ggtags-completing-read-function 的做法在新版 ggtags 中
-  ;; 已无必要，默认即是）
-
-  ;; 注意：旧版在这里用 C-r 绑了 recentf，会覆盖 evil normal state 的
-  ;; redo（evil-redo）；最近文件已移到 SPC f r
+  ;; M-. / M-, 是 Emacs 交互层的 xref 快捷入口，与 SPC c d / c b 双轨并存
+  ;; （刻意保留：一个手不离主键区，一个与 vim 习惯对齐）
   (general-def 'normal
     "M-." 'xref-find-definitions
-    "M-," 'xref-go-back
-    )
+    "M-," 'xref-go-back)
 
 #+end_src
 
@@ -577,6 +668,10 @@ Emacs Lisp.
 which-key is a minor mode for Emacs that displays the key bindings following
 your currently entered incomplete command (a prefix) in a popup.
 #+begin_src emacs-lisp
+  ;; which-key 的定位（按上面的键位架构）只有两件事：
+  ;;   1) 按下 SPC 等前缀键时弹出菜单 —— 配合 leader 绑定里的 :which-key 标签
+  ;;   2) 对不熟悉的命令在 idle 0.3s 后给出提示（或随时按 C-h 立即显示）
+  ;; 它不负责“教整个 Evil”：编辑层的 d c y、w b e 靠肌肉记忆，不靠菜单。
   ;; which-key 自 Emacs 30 起内置，:straight nil 不再重复安装
   (use-package which-key
     :straight nil
